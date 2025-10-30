@@ -1,0 +1,147 @@
+1) FineDiving(다이빙)
+: 52가지 동작 유형, 29가지 하위 동작 유형, 23가지 난이도 유형을 포함하는 3,000개의 비디오 샘플로 구성
+
+- Untrimmed_Videos: 올림픽, 월드컵, 세계 선수권 대회, 유럽 수영 선수권 대회의 다이빙 경기 영상
+- Trimmed_Video_Frames: 트리밍된 비디오 프레임은 트리밍되지 않은 비디오 프레임(data_process.py를 통해 트리밍되지 않은 비디오에서 얻음)에서 추출되며 AQA에 직접 사용할 수 있음
+- 샘플의 75%는 훈련용이고 25%는 테스트용
+
+---------------------------------------------------------------------------------------------------------------------------------------------------
+2) FineGYM(체조)
+: 
+
+- 실시(행)점수 (E점수: Execution Score): 선수의 자세, 기술 실행, 예술성 등을 평가하는 점수(10점에서 스타트-만점 10점)
+: 요소 1개씩 틀릴 때마다 1점씩 감소
+- 난(이)도점수 (D점수: Difficulty Score): 선수가 연기에서 선보인 동작의 난이도에 따라 부여되는 점수(0점에서부터 플러스)
+> 최종점수: E점수와 D점수를 합산한 점수
+
+- 실수 감점: 연기 중 발생하는 실수에 따라 점수가 감점
+> 자세의 불완전성, 불안정한 착지, 중심 흔들림 등
+> 공중회전 시, 다리가 겹치거나 / 착지 시 스템을 발거나 / 흔들리는 경우 / 휘젓는 경우 / 손이 땅에 닿은 경우 / 
+
+*감점 기준(E-score 기준)
+1) 도약(Pre-flight / First flight) - 구름판
+- 무릎 굽힘, 발끝 처리 부족, 다리 벌어짐 → –0.1 ~ –0.3 감점
+- 신체 라인(곧게 펴기 부족, 허리 꺾임) → –0.1 ~ –0.3 감점
+
+2) 도마 지지(Support / Second flight 시작 부분) - 도마 접촉
+- 팔꿈치 굽힘, 어깨 내려앉음 → –0.1 / –0.3 / –0.5 단계적 감점
+- 손 짚기 위치 불균형, 신체 중심 치우침 → –0.1 ~ –0.3
+
+3) 후비행(Post-flight) - 비약
+- 회전량 부족(비틀기, 공중회전 미달) → –0.3 ~ –0.5
+- 비행 높이/거리 부족 → –0.1 ~ –0.5
+- 공중자세 불량(무릎, 발끝, 다리 각도) → –0.1 ~ –0.3
+
+4) 착지(Landing)
+- 작은 스텝/이동 → –0.1
+- 큰 스텝/도약 → –0.3
+- 손 짚음 → –0.5
+- 넘어짐, 착지 실패 → –1.0 또는 0점 처리
+- 착지 라인 아웃(매트 벗어남) → –0.1 ~ –0.3
+
+**D+E-Penalties**
+
+<D-score>
+
+<E-score>
+
+<패널티>
+
+---------------------------------------------------------------------------------------------------------------------------------------------------
+
+<점수 기반 학습 파이프라인>
+그동안 전체 작업 플랜을 정리해드리겠습니다:
+
+  📋 작업 플랜 정리
+
+  1단계: CSV 데이터 재구성
+
+  # 목표: 원본 CSV를 내 train/validation/test 분류에 맞게 재구성
+  입력:
+  - vault_test_class2.csv (원본 AQA-7 test split)
+  - vault_train_class2.csv (원본 AQA-7 train split)
+  - validation_class2.csv (원본 AQA-7 validation split)
+
+  출력:
+  - my_train_scores.csv (내 train 폴더 영상들의 점수)
+  - my_validation_scores.csv (내 validation 폴더 영상들의 점수)
+  - my_test_scores.csv (내 test/bad + test/good 영상들의 점수)
+
+  2단계: Pose 정규화 (Normalization)
+
+  # 목표: 영상 크기 차이 보정
+
+  정규화 기준:
+  1. 골반 너비 (left_hip ↔ right_hip 거리)
+  2. 어깨 너비 (left_shoulder ↔ right_shoulder 거리)
+
+  방법:
+  - 각 프레임마다 어깨 너비로 나눠서 정규화
+  - 전체 시퀀스의 평균 어깨 너비 사용 가능
+
+  출력:
+  - normalized_poses.pkl (정규화된 2D pose)
+
+  3단계: VQ-VAE Codebook 설명
+
+  Codebook이란?
+  # Codebook = Pose Vocabulary (자세 사전)
+
+  예시:
+  codebook = [
+      code_0: "착지 직전 자세",
+      code_1: "무릎 구부린 착지",
+      code_2: "다리 쭉 편 착지",
+      ...
+      code_511: "불안정한 착지"
+  ]
+
+  # 512개의 "대표 자세"를 학습
+  # 각 프레임의 pose를 가장 가까운 code로 매핑
+
+  파일 구조:
+  1. 입력 데이터 (PKL):
+  {
+      'poses': np.array (T, 17, 2),  # 2D keypoints
+      'video_name': '003.avi',
+      'score': 85.5  # 점수 라벨 추가 예정
+  }
+
+  2. Codebook (학습 후):
+  {
+      'embeddings': np.array (512, d),  # 512개 code vectors
+      'usage': np.array (512,),  # 각 code 사용 빈도
+  }
+
+  3. Quantized Codes (VQ 출력):
+  {
+      'codes': np.array (T,),  # [3, 45, 67, 45, ...]
+      'video_name': '003.avi',
+      'score': 85.5
+  }
+
+  4단계: 학습 파이프라인
+
+  원본 비디오
+  ↓ (완료)
+  2D Poses (T, 17, 2) + Score Label
+  ↓ 정규화
+  Normalized Poses
+  ↓ VQ-VAE Encoder
+  Continuous Latent (T, d)
+  ↓ Vector Quantization (Codebook)
+  Discrete Codes (T,) → [code_idx_1, code_idx_2, ...]
+  ↓ VQ-VAE Decoder
+  Reconstructed Poses
+  ↓ AQA Model (Transformer/LSTM)
+  Predicted Score (0-100)
+
+
+
+
+
+
+
+
+
+

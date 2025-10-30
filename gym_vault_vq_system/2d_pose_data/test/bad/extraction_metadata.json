@@ -1,0 +1,21 @@
+{
+  "split": "test\\bad",
+  "total_videos": 10,
+  "successful": 0,
+  "failed": 10,
+  "failed_videos": [
+    "001.avi",
+    "002.avi",
+    "004.avi",
+    "008.avi",
+    "014.avi",
+    "017.avi",
+    "021.avi",
+    "023.avi",
+    "031.avi",
+    "046.avi"
+  ],
+  "extractor": "MMPose (HRNet + RTMDet)",
+  "pose_format": "COCO-17",
+  "pose_dim": "(T, 17, 2)"
+}

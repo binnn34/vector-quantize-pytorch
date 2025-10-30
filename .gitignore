@@ -127,3 +127,11 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Dataset files (videos, large data files)
+*.avi
+*.mp4
+*.mov
+*.mkv
+AQA-7/
+aist_plusplus_final/

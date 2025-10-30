@@ -1,0 +1,21 @@
+{
+  "split": "train",
+  "total_videos": 10,
+  "successful": 0,
+  "failed": 10,
+  "failed_videos": [
+    "003.avi",
+    "007.avi",
+    "009.avi",
+    "011.avi",
+    "012.avi",
+    "013.avi",
+    "015.avi",
+    "016.avi",
+    "019.avi",
+    "024.avi"
+  ],
+  "extractor": "MMPose (HRNet + RTMDet)",
+  "pose_format": "COCO-17",
+  "pose_dim": "(T, 17, 2)"
+}
