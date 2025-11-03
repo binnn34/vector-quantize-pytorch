@@ -138,25 +138,57 @@ class GymVaultDataPreprocessor:
         return poses
 
     def _normalize_bone_length(self, poses):
-        """본 길이 기준 정규화"""
+        """
+        프레임별 어깨 기준 정규화 (교수님 피드백 반영)
+
+        각 프레임마다 독립적으로:
+        1. Translation: 어깨 중심을 원점으로
+        2. Rotation: 어깨를 수평으로
+        3. Scaling: 어깨 너비를 1.0으로
+
+        이 방법으로 카메라 위치(Translation), 각도(Rotation), 줌(Scaling) 불변성 확보
+        """
         normalized_poses = poses.copy()
 
         for frame_idx in range(len(poses)):
-            frame_pose = poses[frame_idx]
+            frame_pose = poses[frame_idx].copy()
 
-            # 주요 본 길이 계산 (어깨 너비 기준)
-            left_shoulder = frame_pose[5]   # left_shoulder
-            right_shoulder = frame_pose[6]  # right_shoulder
+            # 어깨 키포인트 (COCO format: 5=left_shoulder, 6=right_shoulder)
+            left_shoulder = frame_pose[5]
+            right_shoulder = frame_pose[6]
 
+            # Step 1: 어깨 중심 및 너비 계산
+            shoulder_center = (left_shoulder + right_shoulder) / 2.0
             shoulder_width = np.linalg.norm(right_shoulder - left_shoulder)
 
-            if shoulder_width > 0:
-                # 어깨 너비로 전체 포즈 스케일링
-                normalized_poses[frame_idx] = frame_pose / shoulder_width
+            # 어깨 검출 오류 처리 (너무 작은 값 방지)
+            if shoulder_width < 1e-6:
+                normalized_poses[frame_idx] = frame_pose
+                continue
 
-                # 어깨 중점을 원점으로 이동
-                shoulder_center = (left_shoulder + right_shoulder) / 2.0
-                normalized_poses[frame_idx] = normalized_poses[frame_idx] - shoulder_center / shoulder_width
+            # Step 2: Translation - 어깨 중심을 원점으로
+            centered_pose = frame_pose - shoulder_center
+
+            # Step 3: Rotation - 어깨를 수평으로 (y축 기준)
+            # 회전 전 어깨 벡터 (centered 좌표계 기준)
+            shoulder_vector = (right_shoulder - shoulder_center) - (left_shoulder - shoulder_center)
+            shoulder_angle = np.arctan2(shoulder_vector[1], shoulder_vector[0])
+
+            # 회전 행렬 (2D)
+            cos_angle = np.cos(-shoulder_angle)
+            sin_angle = np.sin(-shoulder_angle)
+            rotation_matrix = np.array([
+                [cos_angle, -sin_angle],
+                [sin_angle,  cos_angle]
+            ])
+
+            # 모든 키포인트 회전
+            rotated_pose = np.zeros_like(centered_pose)
+            for joint_idx in range(len(centered_pose)):
+                rotated_pose[joint_idx] = rotation_matrix @ centered_pose[joint_idx]
+
+            # Step 4: Scaling - 어깨 너비를 1.0으로
+            normalized_poses[frame_idx] = rotated_pose / shoulder_width
 
         return normalized_poses
 
