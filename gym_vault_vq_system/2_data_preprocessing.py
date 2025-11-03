@@ -139,38 +139,70 @@ class GymVaultDataPreprocessor:
 
     def _normalize_bone_length(self, poses):
         """
-        프레임별 어깨 기준 정규화 (교수님 피드백 반영)
+        프레임별 어깨 기준 정규화 (교수님 피드백 반영 + 보간 추가)
 
         각 프레임마다 독립적으로:
         1. Translation: 어깨 중심을 원점으로
         2. Rotation: 어깨를 수평으로
         3. Scaling: 어깨 너비를 1.0으로
 
-        이 방법으로 카메라 위치(Translation), 각도(Rotation), 줌(Scaling) 불변성 확보
+        어깨 검출 실패 프레임 처리:
+        - 선형 보간으로 이전/이후 프레임의 어깨 정보 사용
+        - 빠른 동작/모션 블러로 인한 검출 실패 해결
         """
         normalized_poses = poses.copy()
 
-        for frame_idx in range(len(poses)):
+        # Step 0: 어깨 검출 실패 프레임 찾기 및 보간
+        num_frames = len(poses)
+        failed_frames = []
+
+        for frame_idx in range(num_frames):
+            left_shoulder = poses[frame_idx][5]
+            right_shoulder = poses[frame_idx][6]
+            shoulder_width = np.linalg.norm(right_shoulder - left_shoulder)
+
+            if shoulder_width < 1e-6:
+                failed_frames.append(frame_idx)
+
+        # 어깨 검출 실패 프레임 보간
+        if len(failed_frames) > 0:
+            poses = self._interpolate_failed_frames(poses, failed_frames)
+
+        # Step 1-4: 정규화 수행
+        for frame_idx in range(num_frames):
             frame_pose = poses[frame_idx].copy()
 
             # 어깨 키포인트 (COCO format: 5=left_shoulder, 6=right_shoulder)
             left_shoulder = frame_pose[5]
             right_shoulder = frame_pose[6]
 
-            # Step 1: 어깨 중심 및 너비 계산
+            # 어깨 중심 및 너비 계산
             shoulder_center = (left_shoulder + right_shoulder) / 2.0
             shoulder_width = np.linalg.norm(right_shoulder - left_shoulder)
 
-            # 어깨 검출 오류 처리 (너무 작은 값 방지)
+            # 보간 후에도 실패한 경우 (첫/마지막 프레임 등)
             if shoulder_width < 1e-6:
-                normalized_poses[frame_idx] = frame_pose
-                continue
+                # 영상 전체의 평균 어깨 너비 사용
+                all_widths = []
+                for f_idx in range(num_frames):
+                    ls = poses[f_idx][5]
+                    rs = poses[f_idx][6]
+                    w = np.linalg.norm(rs - ls)
+                    if w > 1e-6:
+                        all_widths.append(w)
 
-            # Step 2: Translation - 어깨 중심을 원점으로
+                if len(all_widths) > 0:
+                    shoulder_width = np.mean(all_widths)
+                else:
+                    # 최악의 경우: 전체 포즈 스케일로 대체
+                    shoulder_width = np.linalg.norm(frame_pose)
+                    if shoulder_width < 1e-6:
+                        shoulder_width = 1.0
+
+            # Translation - 어깨 중심을 원점으로
             centered_pose = frame_pose - shoulder_center
 
-            # Step 3: Rotation - 어깨를 수평으로 (y축 기준)
-            # 회전 전 어깨 벡터 (centered 좌표계 기준)
+            # Rotation - 어깨를 수평으로 (y축 기준)
             shoulder_vector = (right_shoulder - shoulder_center) - (left_shoulder - shoulder_center)
             shoulder_angle = np.arctan2(shoulder_vector[1], shoulder_vector[0])
 
@@ -187,10 +219,65 @@ class GymVaultDataPreprocessor:
             for joint_idx in range(len(centered_pose)):
                 rotated_pose[joint_idx] = rotation_matrix @ centered_pose[joint_idx]
 
-            # Step 4: Scaling - 어깨 너비를 1.0으로
+            # Scaling - 어깨 너비를 1.0으로
             normalized_poses[frame_idx] = rotated_pose / shoulder_width
 
         return normalized_poses
+
+    def _interpolate_failed_frames(self, poses, failed_frames):
+        """
+        어깨 검출 실패 프레임을 선형 보간으로 복구
+
+        Args:
+            poses: 원본 포즈 데이터 (frames, 17, 2)
+            failed_frames: 검출 실패 프레임 인덱스 리스트
+
+        Returns:
+            보간된 포즈 데이터
+        """
+        poses_interpolated = poses.copy()
+        num_frames = len(poses)
+
+        for failed_idx in failed_frames:
+            # 이전/이후 유효한 프레임 찾기
+            prev_valid_idx = None
+            next_valid_idx = None
+
+            # 이전 유효 프레임 탐색
+            for i in range(failed_idx - 1, -1, -1):
+                if i not in failed_frames:
+                    ls = poses[i][5]
+                    rs = poses[i][6]
+                    if np.linalg.norm(rs - ls) > 1e-6:
+                        prev_valid_idx = i
+                        break
+
+            # 이후 유효 프레임 탐색
+            for i in range(failed_idx + 1, num_frames):
+                if i not in failed_frames:
+                    ls = poses[i][5]
+                    rs = poses[i][6]
+                    if np.linalg.norm(rs - ls) > 1e-6:
+                        next_valid_idx = i
+                        break
+
+            # 보간 수행
+            if prev_valid_idx is not None and next_valid_idx is not None:
+                # 양쪽 모두 유효: 선형 보간
+                weight = (failed_idx - prev_valid_idx) / (next_valid_idx - prev_valid_idx)
+                poses_interpolated[failed_idx] = (1 - weight) * poses[prev_valid_idx] + weight * poses[next_valid_idx]
+
+            elif prev_valid_idx is not None:
+                # 이전 프레임만 유효: 이전 프레임 복사
+                poses_interpolated[failed_idx] = poses[prev_valid_idx].copy()
+
+            elif next_valid_idx is not None:
+                # 이후 프레임만 유효: 이후 프레임 복사
+                poses_interpolated[failed_idx] = poses[next_valid_idx].copy()
+
+            # 둘 다 없으면: 원본 유지 (최악의 경우)
+
+        return poses_interpolated
 
     def resize_sequence(self, poses, target_length=None):
         """시퀀스 길이 통일"""
